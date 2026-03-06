@@ -48,6 +48,8 @@ const SIYUAN_BASIC_AUTH_PASS = process.env.SIYUAN_BASIC_AUTH_PASS || '';
 /** API端点配置 */
 const API_BASE_URL = `${SIYUAN_USE_HTTPS ? 'https' : 'http'}://${SIYUAN_HOST}${SIYUAN_PORT ? ':' + SIYUAN_PORT : ''}`;
 const SQL_QUERY_ENDPOINT = `${API_BASE_URL}/api/query/sql`;
+const BLOCK_KRAMDOWN_ENDPOINT = `${API_BASE_URL}/api/block/getBlockKramdown`;
+const ASSET_ENDPOINT = `${API_BASE_URL}/api/asset/get`;
 
 if (DEBUG_MODE) {
     console.log(`📡 服务器地址: ${API_BASE_URL}/api/query/sql`);
@@ -277,26 +279,41 @@ async function searchNotes(keyword, limit = 20, blockType = null, page = 1) {
 
         blocks.forEach((item) => {
             const path = item.hPath || '未知文档';
-            if (!groupedByDoc[path]) {
-                groupedByDoc[path] = [];
+            const rootID = item.rootID || '';
+            const docKey = rootID ? `${path}|${rootID}` : path;
+            if (!groupedByDoc[docKey]) {
+                groupedByDoc[docKey] = { path, rootID, items: [] };
             }
             const type = typeMap[item.type] || '块';
             const content = (item.content || '').replace(/<[^>]+>/g, '');
-            groupedByDoc[path].push({ type, content });
+            groupedByDoc[docKey].items.push({ type, content, id: item.id });
         });
 
         let output = `找到 ${results.matchedBlockCount} 条结果，第 ${page}/${results.pageCount} 页\n\n`;
         let globalIndex = 1;
 
-        for (const [path, items] of Object.entries(groupedByDoc)) {
-            output += `📄 ${path}\n`;
-            items.forEach((item) => {
+        for (const docKey of Object.keys(groupedByDoc)) {
+            const doc = groupedByDoc[docKey];
+            const rootIdPart = doc.rootID ? ` [${doc.rootID}]` : '';
+
+            /** 如果文档只有一条结果，不显示文档标题行，直接显示结果 */
+            if (doc.items.length === 1) {
+                const item = doc.items[0];
                 const content = item.content.substring(0, 150);
                 const truncated = item.content.length > 150 ? '...' : '';
-                output += `  ${globalIndex}. [${item.type}] ${content}${truncated}\n`;
+                output += `  ${globalIndex}. 📄${rootIdPart} ${doc.path} > [${item.type} ${item.id}] ${content}${truncated}\n\n`;
                 globalIndex++;
-            });
-            output += '\n';
+            } else {
+                /** 文档有多条结果，显示文档标题行 */
+                output += `📄${rootIdPart} ${doc.path}\n`;
+                doc.items.forEach((item) => {
+                    const content = item.content.substring(0, 150);
+                    const truncated = item.content.length > 150 ? '...' : '';
+                    output += `  ${globalIndex}. [${item.type} ${item.id}] ${content}${truncated}\n`;
+                    globalIndex++;
+                });
+                output += '\n';
+            }
         }
 
         return output.trim();
@@ -426,6 +443,106 @@ async function executeSiyuanQuery(sqlQuery) {
 }
 
 /**
+ * 获取指定块的内容
+ * 自动使用 kramdown 接口获取完整内容，文档块会包含反向链接
+ * @param {string} blockId - 块ID
+ * @returns {Promise<string>} kramdown 内容 + 反向链接的文本
+ */
+async function getBlockByID(blockId) {
+    if (!checkEnvironmentConfig()) {
+        throw new Error('环境配置不完整');
+    }
+
+    if (!blockId) {
+        throw new Error('块ID不能为空');
+    }
+
+    /** 调用 getBlockKramdown 接口获取块内容 */
+    const kramdown = await getBlockKramdown(blockId);
+
+    /** 查询块的基本信息（判断是否为文档块） */
+    const blocks = await executeSiyuanQuery(
+        `SELECT id, type FROM blocks WHERE id = '${blockId}'`
+    );
+
+    if (blocks.length === 0) {
+        return kramdown;
+    }
+
+    const block = blocks[0];
+    let output = kramdown;
+
+    /** 如果是文档块，查询并追加反向链接 */
+    if (block.type === 'd') {
+        const backlinks = await executeSiyuanQuery(
+            `SELECT id, content FROM blocks WHERE id IN (
+                SELECT block_id FROM refs WHERE def_block_id = '${blockId}'
+            ) LIMIT 50`
+        );
+
+        if (backlinks.length > 0) {
+            output += '\n\n---\n\n## 反向链接\n\n';
+            backlinks.forEach((bl) => {
+                output += `- {${bl.id}} ${bl.content || '(无内容)'}\n`;
+            });
+        }
+    }
+
+    return output;
+}
+
+/**
+ * 调用思源 getBlockKramdown API 获取块的 kramdown
+ * @param {string} blockId - 块ID
+ * @returns {Promise<string>} kramdown 内容
+ */
+async function getBlockKramdown(blockId) {
+    const headers = {
+        'Content-Type': 'application/json'
+    };
+
+    const requestBody = { id: blockId };
+
+    let response;
+
+    if (SIYUAN_BASIC_AUTH_USER && SIYUAN_BASIC_AUTH_PASS) {
+        const basicAuthCredentials = Buffer.from(`${SIYUAN_BASIC_AUTH_USER}:${SIYUAN_BASIC_AUTH_PASS}`).toString('base64');
+        headers.Authorization = `Basic ${basicAuthCredentials}`;
+        const urlWithToken = `${BLOCK_KRAMDOWN_ENDPOINT}?token=${encodeURIComponent(SIYUAN_API_TOKEN)}`;
+
+        if (DEBUG_MODE) console.log('🔐 使用双重认证获取 kramdown');
+
+        response = await fetch(urlWithToken, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(requestBody)
+        });
+    } else {
+        headers.Authorization = `Token ${SIYUAN_API_TOKEN}`;
+
+        if (DEBUG_MODE) console.log('🔑 使用思源Token认证获取 kramdown');
+
+        response = await fetch(BLOCK_KRAMDOWN_ENDPOINT, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(requestBody)
+        });
+    }
+
+    if (!response.ok) {
+        throw new Error(`获取 kramdown 失败: HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    if (result.code !== 0) {
+        throw new Error(`获取 kramdown 失败: ${result.msg || '未知错误'}`);
+    }
+
+    return result.data?.kramdown || '';
+}
+
+/**
  * 主函数 - 命令行入口
  */
 async function main() {
@@ -492,13 +609,293 @@ async function main() {
     }
 }
 
-// 导出函数供其他模块使用
-module.exports = {
-    executeSiyuanQuery,
-    searchNotes
-};
+/**
+ * 获取资源文件的完整URL
+ * @param {string} blockId - 包含资源的块ID (可选，仅用于兼容性)
+ * @param {string} assetPath - 资源相对路径 (如 "assets/image-xxx.webp")
+ * @returns {Promise<string>} 资源文件的完整URL
+ *
+ * 注意: blockId 参数保留是为了兼容性，实际不参与URL构建
+ * 思源笔记的资源URL格式: {baseUrl}/assets/{filename}
+ */
+async function getAssetURL(blockId, assetPath) {
+    if (!checkEnvironmentConfig()) {
+        throw new Error('环境配置不完整');
+    }
 
+    if (!assetPath) {
+        throw new Error('资源路径不能为空');
+    }
+
+    /** 去掉assetPath中的assets/前缀（如果有的话） */
+    const cleanPath = assetPath.replace(/^assets\//, '');
+
+    /** 构建资源URL - 思源笔记的资源URL格式: /assets/{文件名} */
+    const assetURL = `${API_BASE_URL}/assets/${cleanPath}`;
+
+    return assetURL;
+}
+
+/**
+ * 获取资源文件并返回base64编码的数据
+ * @param {string} blockId - 包含资源的块ID
+ * @param {string} assetPath - 资源相对路径 (如 "assets/image-xxx.webp")
+ * @returns {Promise<string>} base64编码的资源数据
+ */
+async function getAssetAsBase64(blockId, assetPath) {
+    const assetURL = await getAssetURL(blockId, assetPath);
+
+    try {
+        const headers = {};
+
+        let response;
+
+        if (SIYUAN_BASIC_AUTH_USER && SIYUAN_BASIC_AUTH_PASS) {
+            const basicAuthCredentials = Buffer.from(`${SIYUAN_BASIC_AUTH_USER}:${SIYUAN_BASIC_AUTH_PASS}`).toString('base64');
+            headers.Authorization = `Basic ${basicAuthCredentials}`;
+
+            if (DEBUG_MODE) console.log('🔐 使用Basic Auth获取资源文件');
+
+            response = await fetch(assetURL, {
+                method: 'GET',
+                headers: headers
+            });
+        } else {
+            if (DEBUG_MODE) console.log('🌐 获取资源文件 (无认证)');
+
+            response = await fetch(assetURL, {
+                method: 'GET',
+                headers: headers
+            });
+        }
+
+        if (!response.ok) {
+            throw new Error(`获取资源失败: HTTP ${response.status}`);
+        }
+
+        const buffer = await response.arrayBuffer();
+        const base64 = Buffer.from(buffer).toString('base64');
+
+        return base64;
+    } catch (error) {
+        if (error.name === 'FetchError' || error.code === 'ECONNREFUSED') {
+            throw new Error(`无法连接到思源笔记: ${error.message}`);
+        }
+        throw error;
+    }
+}
+
+/**
+ * 提取块内容中的所有资源路径
+ * @param {string} blockId - 块ID
+ * @returns {Promise<Array>} 资源路径列表
+ */
+async function extractAssetsFromBlock(blockId) {
+    if (!blockId) {
+        throw new Error('块ID不能为空');
+    }
+
+    const blocks = await executeSiyuanQuery(
+        `SELECT content, markdown FROM blocks WHERE id = '${blockId}'`
+    );
+
+    if (blocks.length === 0) {
+        throw new Error(`未找到块ID: ${blockId}`);
+    }
+
+    const block = blocks[0];
+    const assets = [];
+
+    /** 从content字段提取资源路径 (格式: "image assets/xxx.webp") */
+    const contentMatches = block.content?.matchAll(/image\s+(assets\/[^\s]+)/g) || [];
+    for (const match of contentMatches) {
+        assets.push({
+            path: match[1],
+            type: 'image'
+        });
+    }
+
+    /** 从markdown字段提取资源路径 (格式: "![alt](assets/xxx.webp)") */
+    const markdownMatches = block.markdown?.matchAll(/!\[.*?\]\((assets\/[^\)]+)\)/g) || [];
+    for (const match of markdownMatches) {
+        const path = match[1];
+        /** 避免重复添加 */
+        if (!assets.find(a => a.path === path)) {
+            assets.push({
+                path: path,
+                type: 'image'
+            });
+        }
+    }
+
+    return assets;
+}
+
+// 导出函数供其他模块使用
 // 如果直接运行此文件，执行主函数
 if (require.main === module) {
     main();
 }
+
+/**
+ * 下载资源文件到本地临时目录
+ * @param {string} blockId - 包含资源的块ID
+ * @param {string} assetPath - 资源相对路径 (如 "assets/image-xxx.webp")
+ * @returns {Promise<string>} 本地文件路径
+ * 
+ * 使用场景：当思源笔记部署在本地时，其他技能无法直接访问资源URL
+ * 解决方案：将资源下载到本地临时目录，返回本地文件路径供其他技能使用
+ */
+async function getLocalAssetPath(blockId, assetPath) {
+    const assetURL = await getAssetURL(blockId, assetPath);
+
+    /** 清理超过1小时的临时文件 */
+    clearExpiredTempAssets();
+
+    try {
+        const headers = {};
+
+        let response;
+
+        if (SIYUAN_BASIC_AUTH_USER && SIYUAN_BASIC_AUTH_PASS) {
+            const basicAuthCredentials = Buffer.from(`${SIYUAN_BASIC_AUTH_USER}:${SIYUAN_BASIC_AUTH_PASS}`).toString('base64');
+            headers.Authorization = `Basic ${basicAuthCredentials}`;
+
+            if (DEBUG_MODE) console.log('🔐 使用Basic Auth下载资源文件');
+
+            response = await fetch(assetURL, {
+                method: 'GET',
+                headers: headers
+            });
+        } else {
+            if (DEBUG_MODE) console.log('🌐 下载资源文件 (无认证)');
+
+            response = await fetch(assetURL, {
+                method: 'GET',
+                headers: headers
+            });
+        }
+
+        if (!response.ok) {
+            throw new Error(`下载资源失败: HTTP ${response.status}`);
+        }
+
+        const buffer = await response.arrayBuffer();
+
+        /** 创建临时目录 - 使用项目根目录下的.tmp/assets */
+        const tmpDir = path.join(__dirname, '.tmp', 'assets');
+        if (!fs.existsSync(tmpDir)) {
+            fs.mkdirSync(tmpDir, { recursive: true });
+        }
+
+        /** 提取文件名 */
+        const cleanPath = assetPath.replace(/^assets\//, '');
+        const localPath = path.join(tmpDir, cleanPath);
+
+        /** 确保目标目录存在 */
+        const localDir = path.dirname(localPath);
+        if (!fs.existsSync(localDir)) {
+            fs.mkdirSync(localDir, { recursive: true });
+        }
+
+        /** 写入文件 */
+        fs.writeFileSync(localPath, Buffer.from(buffer));
+
+        if (DEBUG_MODE) console.log(`✅ 资源已下载到: ${localPath}`);
+
+        return localPath;
+    } catch (error) {
+        if (error.name === 'FetchError' || error.code === 'ECONNREFUSED') {
+            throw new Error(`无法连接到思源笔记: ${error.message}`);
+        }
+        throw error;
+    }
+}
+
+/**
+ * 清理过期的临时文件（超过1小时）
+ * @param {number} maxAge - 最大文件年龄（毫秒），默认1小时
+ */
+function clearExpiredTempAssets(maxAge = 60 * 60 * 1000) {
+    const tmpDir = path.join(__dirname, '.tmp', 'assets');
+    
+    if (!fs.existsSync(tmpDir)) {
+        return;
+    }
+
+    const now = Date.now();
+    let clearedCount = 0;
+
+    /** 递归删除过期文件 */
+    function clearDirectory(dir) {
+        const items = fs.readdirSync(dir);
+        
+        for (const item of items) {
+            const itemPath = path.join(dir, item);
+            const stats = fs.statSync(itemPath);
+            
+            if (stats.isDirectory()) {
+                clearDirectory(itemPath);
+                
+                /** 如果目录为空，删除目录 */
+                try {
+                    const remaining = fs.readdirSync(itemPath);
+                    if (remaining.length === 0) {
+                        fs.rmdirSync(itemPath);
+                    }
+                } catch (error) {
+                    // 目录可能已被删除，忽略错误
+                }
+            } else if (stats.isFile()) {
+                /** 检查文件年龄 */
+                const age = now - stats.mtimeMs;
+                if (age > maxAge) {
+                    try {
+                        fs.unlinkSync(itemPath);
+                        clearedCount++;
+                        if (DEBUG_MODE) console.log(`🗑️  清理过期文件: ${itemPath}`);
+                    } catch (error) {
+                        if (DEBUG_MODE) console.warn(`⚠️  清理文件失败: ${itemPath}`, error.message);
+                    }
+                }
+            }
+        }
+    }
+
+    try {
+        clearDirectory(tmpDir);
+        if (DEBUG_MODE && clearedCount > 0) {
+            console.log(`✅ 清理了 ${clearedCount} 个过期临时文件`);
+        }
+    } catch (error) {
+        if (DEBUG_MODE) console.warn('⚠️  清理临时文件失败:', error.message);
+    }
+}
+
+/**
+ * 清理指定的临时文件
+ * @param {string} localPath - 本地文件路径
+ */
+function clearTempAsset(localPath) {
+    try {
+        if (fs.existsSync(localPath)) {
+            fs.unlinkSync(localPath);
+            if (DEBUG_MODE) console.log(`🗑️  已清理临时文件: ${localPath}`);
+        }
+    } catch (error) {
+        console.warn(`⚠️  清理临时文件失败: ${error.message}`);
+    }
+}
+
+// 更新导出模块
+module.exports = {
+    executeSiyuanQuery,
+    searchNotes,
+    getBlockByID,
+    getAssetURL,
+    getAssetAsBase64,
+    extractAssetsFromBlock,
+    getLocalAssetPath,
+    clearTempAsset,
+    clearExpiredTempAssets
+};
