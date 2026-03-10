@@ -126,7 +126,7 @@ console.log(content);
 
 ```javascript
 const imagePath = await siyuan.getLocalAssetPath('块ID', 'assets/image-xxx.webp');
-console.log(imagePath); // /home/user/.claude/skills/siyuan-notes-skill/.tmp/assets/image-xxx.webp
+console.log(imagePath); // ./.tmp/assets/image-xxx.webp
 ```
 
 ## 块类型参数
