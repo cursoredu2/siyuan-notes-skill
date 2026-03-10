@@ -31,13 +31,13 @@ SELECT id, content, updated FROM blocks WHERE content LIKE '%完成%'
 
 ```bash
 # 全文搜索（推荐，支持中文分词，返回格式化字符串）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { console.log(await s.searchNotes('关键词', 20)); })();"
+node -e "const s = require('./index.js'); (async () => { console.log(await s.searchNotes('关键词', 20)); })();"
 
 # 按类型搜索（只搜索标题）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { console.log(await s.searchNotes('关键词', 10, 'h')); })();"
+node -e "const s = require('./index.js'); (async () => { console.log(await s.searchNotes('关键词', 10, 'h')); })();"
 
 # 翻页（第2页）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { console.log(await s.searchNotes('关键词', 20, null, 2)); })();"
+node -e "const s = require('./index.js'); (async () => { console.log(await s.searchNotes('关键词', 20, null, 2)); })();"
 ```
 
 **返回格式：**
@@ -56,14 +56,14 @@ node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.j
 
 ```bash
 # 获取指定块的内容（返回 kramdown 源码，文档块包含反向链接）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { console.log(await s.getBlockByID('块ID')); })();"
+node -e "const s = require('./index.js'); (async () => { console.log(await s.getBlockByID('块ID')); })();"
 ```
 
 #### getLocalAssetPath - 获取资源文件的本地路径
 
 ```bash
 # 获取资源文件（图片、附件等）的本地完整路径
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { 
+node -e "const s = require('./index.js'); (async () => { 
   const path = await s.getLocalAssetPath('块ID', 'assets/image-xxx.webp'); 
   console.log(path); 
 })();"
@@ -71,7 +71,7 @@ node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.j
 
 **返回示例：**
 ```
-/home/gs/.claude/skills/siyuan-notes/.tmp/assets/image-20251223152400-195ojeh.webp
+./.tmp/assets/image-20251223152400-195ojeh.webp
 ```
 
 **使用场景：**
@@ -83,7 +83,7 @@ node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.j
 
 ```bash
 # 提取指定块中所有的资源文件路径
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { 
+node -e "const s = require('./index.js'); (async () => { 
   const assets = await s.extractAssetsFromBlock('块ID'); 
   console.log(assets); 
 })();"
@@ -103,7 +103,7 @@ node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.j
 
 ```bash
 # SQL查询（返回精简后的原始数据数组，包含 markdown 字段）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { console.log(await s.executeSiyuanQuery('SELECT id, markdown, updated FROM blocks WHERE markdown LIKE \\\"%关键词%\\\" LIMIT 10')); })();"
+node -e "const s = require('./index.js'); (async () => { console.log(await s.executeSiyuanQuery('SELECT id, markdown, updated FROM blocks WHERE markdown LIKE \\\"%关键词%\\\" LIMIT 10')); })();"
 ```
 
 ### 块类型参数
@@ -122,7 +122,7 @@ node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.j
 
 ```bash
 # 查询最近的工作待办（按更新时间倒序，包含 markdown 格式）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { 
+node -e "const s = require('./index.js'); (async () => { 
   const results = await s.executeSiyuanQuery(\"SELECT id, markdown, updated FROM blocks WHERE markdown LIKE '%#工作/todo#%' ORDER BY updated DESC LIMIT 30\"); 
   results.forEach((r, i) => {
     const date = r.updated.slice(0, 8);
@@ -136,7 +136,7 @@ node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.j
 
 ```bash
 # 查询最近完成的任务（[x] 标记）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { 
+node -e "const s = require('./index.js'); (async () => { 
   const results = await s.executeSiyuanQuery(\"SELECT id, markdown, updated FROM blocks WHERE markdown LIKE '%[x]%' ORDER BY updated DESC LIMIT 20\"); 
   results.forEach((r, i) => {
     const date = r.updated.slice(0, 8);
@@ -149,7 +149,7 @@ node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.j
 
 ```bash
 # 查询最近未完成的任务（[ ] 标记）
-node -e "const s = require('/home/node/.openclaw/workspace/skills/siyuan/index.js'); (async () => { 
+node -e "const s = require('./index.js'); (async () => { 
   const results = await s.executeSiyuanQuery(\"SELECT id, markdown, updated FROM blocks WHERE markdown LIKE '%[ ]%' ORDER BY updated DESC LIMIT 20\"); 
   results.forEach((r, i) => {
     const date = r.updated.slice(0, 8);
